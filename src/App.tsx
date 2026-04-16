@@ -275,6 +275,7 @@ export default function App() {
   if (!user) return <AuthScreen />;
 
   const contextMenuStudent = contextMenu ? students.find(s => s.id === contextMenu.studentId) : null;
+  const studentHasConfirmed = contextMenuStudent ? confirmedNames.has(contextMenuStudent.name.toLowerCase().trim()) : false;
 
   return (
     <div className="min-h-screen bg-slate-50 p-2 sm:p-4 font-sans text-slate-800 pb-12 flex flex-col relative">
@@ -306,10 +307,16 @@ export default function App() {
             className="fixed z-50 bg-white rounded-lg shadow-xl border border-slate-200 py-1 min-w-[160px] flex flex-col overflow-hidden"
             style={{ top: contextMenu.mouseY, left: contextMenu.mouseX }}
           >
-            {contextMenuStudent.band !== 'Confirmed' && (
+            {contextMenuStudent.band !== 'Confirmed' && contextMenuStudent.band !== 'Feedback' && (
               <button 
-                className="w-full text-left px-4 py-2 text-sm text-green-600 font-bold hover:bg-green-50 transition-colors"
-                onClick={() => handleMoveToConfirmed(contextMenuStudent)}
+                className={`w-full text-left px-4 py-2 text-sm font-bold transition-colors ${
+                  studentHasConfirmed 
+                    ? 'text-slate-400 bg-slate-50 cursor-not-allowed' 
+                    : 'text-green-600 hover:bg-green-50'
+                }`}
+                onClick={() => !studentHasConfirmed && handleMoveToConfirmed(contextMenuStudent)}
+                disabled={studentHasConfirmed}
+                title={studentHasConfirmed ? "Student already confirmed. Move their confirmed choice back first." : ""}
               >
                 Confirm this Choice
               </button>
@@ -375,7 +382,7 @@ export default function App() {
           <span className="text-2xl font-bold">+</span>
         </button>
 
-        <h1 className="text-lg font-bold text-slate-900 hidden sm:block">Band Placement</h1>
+        <h1 className="text-lg font-bold text-slate-900 hidden sm:block">Beginner Placement</h1>
         
         <div className="flex items-center gap-2">
           {/* Search Bar */}
@@ -574,7 +581,7 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6">
-        <h3 className="text-xl font-bold mb-4">Add New Recruit</h3>
+        <h3 className="text-xl font-bold mb-4">Add Student</h3>
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">Student Name</label>
