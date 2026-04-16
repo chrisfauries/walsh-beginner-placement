@@ -21,7 +21,9 @@ interface Student {
   band: string;
   grade: GradeLevel;
   position?: number;
-  color?: string; // Optional personal color override
+  color?: string; 
+  previousBand?: string; 
+  comment?: string; 
 }
 
 interface Band {
@@ -30,83 +32,16 @@ interface Band {
 }
 
 const DEFAULT_BANDS: Band[] = [
-  { name: 'Honor Band', color: '#fef08a' }, 
-  { name: 'Symphonic Band', color: '#e2e8f0' }, 
-  { name: 'Concert Band', color: '#fed7aa' }, 
-  { name: 'Intermediate Band', color: '#bae6fd' }, 
-  { name: 'Beginner', color: '#dcfce7' }, 
-  { name: 'Dropped', color: '#f3f4f6' }, 
+  { name: 'Confirmed', color: '#dcfce7' }, 
+  { name: '1st Choice', color: '#fef08a' }, 
+  { name: '2nd Choice', color: '#fed7aa' }, 
+  { name: '3rd Choice', color: '#bae6fd' }, 
 ];
 
 const INSTRUMENTS = [
   'Flute', 'Oboe', 'Bassoon','Clarinet', 'Saxophone', 
   'Trumpet', 'Horn', 'Trombone', 'Euphonium', 'Tuba', 'Percussion'
 ];
-
-// ==========================================
-// AUTO-SCROLL HOOK
-// ==========================================
-function useAutoScroll(isDragging: boolean) {
-  const mousePos = useRef({ x: 0, y: 0 });
-  const requestRef = useRef<number>();
-
-  useEffect(() => {
-    const handleDragOver = (e: DragEvent) => {
-      mousePos.current = { x: e.clientX, y: e.clientY };
-    };
-
-    if (isDragging) {
-      window.addEventListener('dragover', handleDragOver);
-    } else {
-      window.removeEventListener('dragover', handleDragOver);
-    }
-
-    return () => window.removeEventListener('dragover', handleDragOver);
-  }, [isDragging]);
-
-  useEffect(() => {
-    if (!isDragging) {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      return;
-    }
-
-    const scroll = () => {
-      const { x, y } = mousePos.current;
-      const { innerWidth, innerHeight } = window;
-      const threshold = 100;
-      const maxSpeed = 20;
-
-      let scrollX = 0;
-      let scrollY = 0;
-
-      // Calculate horizontal scroll
-      if (x < threshold && x > 0) {
-        scrollX = -maxSpeed * (1 - x / threshold);
-      } else if (x > innerWidth - threshold && x < innerWidth) {
-        scrollX = maxSpeed * (1 - (innerWidth - x) / threshold);
-      }
-
-      // Calculate vertical scroll
-      if (y < threshold && y > 0) {
-        scrollY = -maxSpeed * (1 - y / threshold);
-      } else if (y > innerHeight - threshold && y < innerHeight) {
-        scrollY = maxSpeed * (1 - (innerHeight - y) / threshold);
-      }
-
-      if (scrollX !== 0 || scrollY !== 0) {
-        window.scrollBy(scrollX, scrollY);
-      }
-
-      requestRef.current = requestAnimationFrame(scroll);
-    };
-
-    requestRef.current = requestAnimationFrame(scroll);
-
-    return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-    };
-  }, [isDragging]);
-}
 
 // ==========================================
 // MAIN APP COMPONENT
@@ -120,20 +55,13 @@ export default function App() {
   const [students, setStudents] = useState<Student[]>([]);
   const [bands, setBands] = useState<Band[]>(DEFAULT_BANDS);
   
-  // --- Drag & Drop State ---
-  const [draggedStudentId, setDraggedStudentId] = useState<string | null>(null);
-  const [activeZone, setActiveZone] = useState<{band: string, instrument: string} | null>(null);
-  
   // --- Context Menu State ---
-  const [contextMenu, setContextMenu] = useState<{mouseX: number, mouseY: number, studentId: string, mode: 'menu' | 'picker'} | null>(null);
+  const [contextMenu, setContextMenu] = useState<{mouseX: number, mouseY: number, studentId: string} | null>(null);
   const [isMainMenuOpen, setIsMainMenuOpen] = useState(false);
 
   // --- Modal States ---
-  const [csvErrors, setCsvErrors] = useState<string[] | null>(null);
   const [isClearModalOpen, setIsClearModalOpen] = useState(false);
-
-  // Initialize auto-scroll behavior when a student is actively being dragged
-  useAutoScroll(!!draggedStudentId);
+  const [isAddRecruitOpen, setIsAddRecruitOpen] = useState(false);
 
   // --- Listen to Authentication Status ---
   useEffect(() => {
@@ -195,78 +123,40 @@ export default function App() {
     return () => { unsubStudents(); unsubBands(); };
   }, [user]);
 
-  // --- Drag & Drop Handlers ---
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-    setDraggedStudentId(id);
-    e.dataTransfer.setData('text/plain', id);
-    e.dataTransfer.effectAllowed = 'move';
-  };
+  // Derive which names are in the "Confirmed" row for gray-out logic
+  const confirmedNames = new Set(
+    students
+      .filter(s => s.band === 'Confirmed')
+      .map(s => s.name.toLowerCase().trim())
+  );
 
-  const handleDragEnd = () => {
-    setDraggedStudentId(null);
-    setActiveZone(null);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
-
-  // Handles dropping on the empty space of a cell (appends to end)
-  const handleCellDrop = async (e: React.DragEvent, targetBand: string, targetInstrument: string) => {
-    e.preventDefault();
-    setActiveZone(null);
-    const studentId = e.dataTransfer.getData('text/plain') || draggedStudentId;
-    if (!studentId) return;
-
-    const cellStudents = students.filter(s => s.band === targetBand && s.instrument === targetInstrument);
-    const maxPos = cellStudents.length > 0 ? Math.max(...cellStudents.map(s => s.position ?? 0)) : 0;
-
-    await update(ref(db, `students/${studentId}`), { 
-      band: targetBand, 
-      instrument: targetInstrument,
-      position: maxPos + 1000
-    });
-    setDraggedStudentId(null);
-  };
-
-  // Handles dropping explicitly ON a blue drop indicator line between cards
-  const handleReorder = async (studentId: string, targetBand: string, targetInstrument: string, newPos: number) => {
-    await update(ref(db, `students/${studentId}`), {
-      band: targetBand,
-      instrument: targetInstrument,
-      position: newPos
-    });
-    setDraggedStudentId(null);
-    setActiveZone(null);
-  };
-
-  const handleAddStudent = async (band: string, instrument: string) => {
-    const cellStudents = students.filter(s => s.band === band && s.instrument === instrument);
-    const maxPos = cellStudents.length > 0 ? Math.max(...cellStudents.map(s => s.position ?? 0)) : 0;
+  const handleAddRecruit = async (name: string, grade: GradeLevel, choices: string[]) => {
+    const updates: any = {};
+    const rowNames = ['1st Choice', '2nd Choice', '3rd Choice'];
     
-    await push(ref(db, 'students'), { 
-      name: 'New Student', 
-      instrument, 
-      band, 
-      grade: '?',
-      position: maxPos + 1000 
+    choices.forEach((instrument, index) => {
+      if (instrument) { 
+        const newKey = push(ref(db, 'students')).key;
+        updates[`students/${newKey}`] = { 
+          name: name.trim(), 
+          instrument, 
+          band: rowNames[index], 
+          grade: grade,
+          position: Date.now() + index 
+        };
+      }
     });
-  };
-
-  const handleNameEdit = async (id: string, newName: string) => {
-    if (!newName.trim()) return;
-    await update(ref(db, `students/${id}`), { name: newName.trim() });
-  };
-
-  const handleCycleGrade = async (id: string, currentGrade: GradeLevel) => {
-    const sequence: GradeLevel[] = ['?', '6', '7', '8'];
-    const nextIndex = (sequence.indexOf(currentGrade) + 1) % sequence.length;
-    await update(ref(db, `students/${id}`), { grade: sequence[nextIndex] });
+    
+    await update(ref(db), updates);
+    setIsAddRecruitOpen(false);
   };
 
   const handleColorChange = async (bandName: string, newColor: string) => {
     await update(ref(db, `bands/${bandName}`), { color: newColor });
+  };
+
+  const handleUpdateComment = async (id: string, comment: string) => {
+    await update(ref(db, `students/${id}`), { comment: comment.trim() });
   };
 
   // --- Context Menu Handlers ---
@@ -275,8 +165,7 @@ export default function App() {
     setContextMenu({
       mouseX: e.clientX,
       mouseY: e.clientY,
-      studentId: studentId,
-      mode: 'menu'
+      studentId: studentId
     });
   };
 
@@ -284,26 +173,57 @@ export default function App() {
     setContextMenu(null);
   };
 
-  const handleDeleteStudent = async (studentId: string) => {
-    await remove(ref(db, `students/${studentId}`));
+  const handleMoveToConfirmed = async (student: Student) => {
+    await update(ref(db, `students/${student.id}`), {
+      band: 'Confirmed',
+      previousBand: student.band
+    });
     closeContextMenu();
   };
 
-  const handleRemovePersonalColor = async (studentId: string) => {
-    await update(ref(db, `students/${studentId}`), { color: null });
+  const handleMoveToPrevious = async (student: Student) => {
+    await update(ref(db, `students/${student.id}`), {
+      band: student.previousBand,
+      previousBand: null
+    });
+    closeContextMenu();
+  };
+
+  const handleDeleteStudent = async (studentId: string) => {
+    const studentToDelete = students.find(s => s.id === studentId);
+    if (!studentToDelete) {
+      closeContextMenu();
+      return;
+    }
+    
+    const targetName = studentToDelete.name.toLowerCase().trim();
+    const updates: any = {};
+    
+    students.forEach(s => {
+      if (s.name.toLowerCase().trim() === targetName) {
+        updates[`students/${s.id}`] = null;
+      }
+    });
+    
+    await update(ref(db), updates);
     closeContextMenu();
   };
 
   // --- Export CSV ---
   const handleExportCSV = () => {
-    const headers = ['Name', 'Instrument', 'Band', 'Grade', 'Position'];
+    const headers = ['Name', 'Instrument', 'Band', 'Grade', 'Position', 'Comment'];
     const sortedStudents = [...students].sort((a, b) => {
       if (a.band !== b.band) return a.band.localeCompare(b.band);
       if (a.instrument !== b.instrument) return a.instrument.localeCompare(b.instrument);
-      return (a.position ?? 0) - (b.position ?? 0);
+      
+      const isGrayA = a.band !== 'Confirmed' && confirmedNames.has(a.name.toLowerCase().trim());
+      const isGrayB = b.band !== 'Confirmed' && confirmedNames.has(b.name.toLowerCase().trim());
+      if (isGrayA !== isGrayB) return isGrayA ? 1 : -1;
+
+      return a.name.localeCompare(b.name);
     });
 
-    const rows = sortedStudents.map(s => `${s.name},${s.instrument},${s.band},${s.grade},${s.position ?? 0}`);
+    const rows = sortedStudents.map(s => `"${s.name}","${s.instrument}","${s.band}","${s.grade}","${s.position ?? 0}","${(s.comment || '').replace(/"/g, '""')}"`);
     const csvContent = [headers.join(','), ...rows].join('\n');
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -321,59 +241,22 @@ export default function App() {
     setIsClearModalOpen(false);
   };
 
-  // --- Import CSV ---
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const text = await file.text();
-    const lines = text.split('\n').filter(l => l.trim() !== '');
-    const startIndex = lines[0].toLowerCase().includes('name') ? 1 : 0;
-    
-    const updates: any = {};
-    const validationErrors: string[] = [];
-    const VALID_BANDS = DEFAULT_BANDS.map(b => b.name);
-    const VALID_GRADES = ['6', '7', '8', '?'];
-
-    for (let i = startIndex; i < lines.length; i++) {
-      const originalLine = lines[i];
-      const parts = originalLine.split(',').map(s => s.trim());
-      const name = parts[0] || '';
-      const instrument = parts[1] || '';
-      const band = parts[2] || '';
-      const grade = parts[3] || '';
-      
-      let position = parseFloat(parts[4] || '');
-      if (isNaN(position)) position = 1000 + (i * 1000); 
-      
-      const lineNumber = i + 1;
-
-      if (!name) validationErrors.push(`Line ${lineNumber}: 'Name' column is empty. [Raw Line: "${originalLine}"]`);
-      if (!INSTRUMENTS.includes(instrument)) validationErrors.push(`Line ${lineNumber}: 'Instrument' column issue ("${instrument}" is not valid). [Raw Line: "${originalLine}"]`);
-      if (!VALID_BANDS.includes(band)) validationErrors.push(`Line ${lineNumber}: 'Band' column issue ("${band}" is not valid). [Raw Line: "${originalLine}"]`);
-      if (!VALID_GRADES.includes(grade)) validationErrors.push(`Line ${lineNumber}: 'Grade' column issue ("${grade}" is not valid). [Raw Line: "${originalLine}"]`);
-
-      if (name && INSTRUMENTS.includes(instrument) && VALID_BANDS.includes(band) && VALID_GRADES.includes(grade)) {
-        const newStudentKey = push(ref(db, 'students')).key;
-        updates[`students/${newStudentKey}`] = { name, instrument, band, grade, position };
-      }
-    }
-    
-    if (validationErrors.length > 0) setCsvErrors(validationErrors);
-    else await update(ref(db), updates);
-
-    if (e.target) e.target.value = '';
-  };
-
   if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500">Loading...</div>;
   if (!user) return <AuthScreen />;
 
   const contextMenuStudent = contextMenu ? students.find(s => s.id === contextMenu.studentId) : null;
-  const hasPersonalColor = !!contextMenuStudent?.color;
 
   return (
     <div className="min-h-screen bg-slate-50 p-2 sm:p-4 font-sans text-slate-800 pb-12 flex flex-col relative">
       
+      {/* Add Recruit Modal */}
+      {isAddRecruitOpen && (
+        <AddRecruitModal 
+          onClose={() => setIsAddRecruitOpen(false)} 
+          onSubmit={handleAddRecruit} 
+        />
+      )}
+
       {/* Context Menu Overlay & Menu */}
       {contextMenu && contextMenuStudent && (
         <>
@@ -386,46 +269,30 @@ export default function App() {
             className="fixed z-50 bg-white rounded-lg shadow-xl border border-slate-200 py-1 min-w-[160px] flex flex-col overflow-hidden"
             style={{ top: contextMenu.mouseY, left: contextMenu.mouseX }}
           >
-            {contextMenu.mode === 'menu' ? (
-              <>
-                <button 
-                  className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 transition-colors"
-                  onClick={() => setContextMenu({ ...contextMenu, mode: 'picker' })}
-                >
-                  Set Personal Color
-                </button>
-                {hasPersonalColor && (
-                  <button 
-                    className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 transition-colors"
-                    onClick={() => handleRemovePersonalColor(contextMenu.studentId)}
-                  >
-                    Remove Personal Color
-                  </button>
-                )}
-                <button 
-                  className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
-                  onClick={() => handleDeleteStudent(contextMenu.studentId)}
-                >
-                  Delete Student
-                </button>
-              </>
-            ) : (
-              <div className="p-3 flex flex-col gap-2">
-                <span className="text-xs font-bold text-slate-500 uppercase">Pick Color</span>
-                <input 
-                  type="color" 
-                  value={contextMenuStudent.color || '#ffffff'}
-                  onChange={(e) => update(ref(db, `students/${contextMenu.studentId}`), { color: e.target.value })}
-                  className="w-full h-10 rounded cursor-pointer border border-slate-300"
-                />
-                <button 
-                  onClick={closeContextMenu}
-                  className="w-full bg-blue-600 text-white rounded py-1.5 mt-1 text-sm font-medium hover:bg-blue-700 transition-colors"
-                >
-                  Done
-                </button>
-              </div>
+            {contextMenuStudent.band !== 'Confirmed' && (
+              <button 
+                className="w-full text-left px-4 py-2 text-sm text-green-600 font-bold hover:bg-green-50 transition-colors"
+                onClick={() => handleMoveToConfirmed(contextMenuStudent)}
+              >
+                Confirm this Choice
+              </button>
             )}
+            
+            {contextMenuStudent.band === 'Confirmed' && contextMenuStudent.previousBand && (
+              <button 
+                className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 transition-colors"
+                onClick={() => handleMoveToPrevious(contextMenuStudent)}
+              >
+                Move back to {contextMenuStudent.previousBand}
+              </button>
+            )}
+            
+            <button 
+              className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+              onClick={() => handleDeleteStudent(contextMenu.studentId)}
+            >
+              Delete Student
+            </button>
           </div>
         </>
       )}
@@ -461,47 +328,16 @@ export default function App() {
         </div>
       )}
 
-      {/* CSV Error Modal Overlay */}
-      {csvErrors && csvErrors.length > 0 && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-lg max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden">
-            <div className="p-4 border-b border-slate-200 bg-red-50">
-              <h3 className="text-lg font-bold text-red-600">CSV Formatting Issues</h3>
-              <p className="text-sm text-red-500 mt-1">
-                Please fix the following errors and upload the file again. <br/>
-                <strong>No students were imported.</strong>
-              </p>
-            </div>
-            
-            <div className="p-4 border-b border-slate-200 bg-slate-100 text-sm text-slate-700">
-              <h4 className="font-bold mb-2">Valid Exact Options (Case Sensitive):</h4>
-              <p><strong>Instruments:</strong> {INSTRUMENTS.join(', ')}</p>
-              <p className="mt-1"><strong>Bands:</strong> {DEFAULT_BANDS.map(b => b.name).join(', ')}</p>
-              <p className="mt-1"><strong>Grades:</strong> 6, 7, 8, ?</p>
-            </div>
-
-            <div className="p-4 overflow-y-auto bg-white flex-1">
-              <ul className="list-disc pl-5 text-sm text-slate-700 space-y-2 font-mono">
-                {csvErrors.map((err, i) => (
-                  <li key={i}>{err}</li>
-                ))}
-              </ul>
-            </div>
-            <div className="p-4 border-t border-slate-200 bg-slate-50 text-right">
-              <button 
-                onClick={() => setCsvErrors(null)} 
-                className="px-5 py-2 bg-slate-800 text-white font-medium rounded-lg hover:bg-slate-700 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Compact Header & Hamburger Menu */}
       <header className="mb-2 flex flex-row items-center justify-between bg-white p-1 rounded-xl shadow-sm border border-slate-300 relative z-30">
-        <div className='w-12'></div>
+        <button 
+          onClick={() => setIsAddRecruitOpen(true)}
+          className="w-10 h-10 flex items-center justify-center bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm ml-1"
+          title="Add New Recruit"
+        >
+          <span className="text-2xl font-bold">+</span>
+        </button>
+
         <h1 className="text-lg font-bold text-slate-900">Band Placement</h1>
         
         <button 
@@ -517,18 +353,6 @@ export default function App() {
           <>
             <div className="fixed inset-0 z-40" onClick={() => setIsMainMenuOpen(false)} />
             <div className="absolute right-4 top-14 z-50 bg-white rounded-lg shadow-xl border border-slate-200 py-1 min-w-[160px] flex flex-col overflow-hidden">
-              <label className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer">
-                Import CSV
-                <input 
-                  type="file" 
-                  accept=".csv" 
-                  className="hidden" 
-                  onChange={(e) => {
-                    handleFileUpload(e);
-                    setIsMainMenuOpen(false);
-                  }} 
-                />
-              </label>
               <button 
                 onClick={() => {
                   handleExportCSV();
@@ -563,15 +387,7 @@ export default function App() {
       </header>
 
       {/* Grid Container */}
-      <div 
-        className="w-full bg-white rounded-xl shadow-sm border border-slate-300 mb-4 flex-1 flex flex-col relative"
-        onDragLeave={(e) => {
-          const related = e.relatedTarget as Node | null;
-          if (!e.currentTarget.contains(related)) {
-            setActiveZone(null);
-          }
-        }}
-      >
+      <div className="w-full bg-white rounded-xl shadow-sm border border-slate-300 mb-4 flex-1 flex flex-col relative">
         <div className="min-w-max flex flex-col flex-1">
           {/* Header Row (Instruments) */}
           <div className="flex w-full border-b-2 border-slate-800 sticky top-0 z-20 bg-white shadow-sm">
@@ -579,14 +395,14 @@ export default function App() {
               {/* Empty intersection cell */}
             </div>
             {INSTRUMENTS.map(instrument => {
-              const isActiveInstrument = activeZone?.instrument === instrument;
+              const confirmedCount = students.filter(s => s.band === 'Confirmed' && s.instrument === instrument).length;
               return (
                 <div 
                   key={instrument} 
                   title={instrument} 
-                  className={`flex-1 w-0 min-w-[160px] text-[9px] sm:text-xs md:text-sm px-0.5 py-3 text-center truncate transition-all duration-200 flex items-center justify-center ${isActiveInstrument ? 'text-blue-600 font-extrabold scale-110' : 'text-slate-700 font-bold'}`}
+                  className="flex-1 w-0 min-w-[160px] text-[9px] sm:text-xs md:text-sm px-0.5 py-3 text-center truncate transition-all duration-200 flex items-center justify-center text-slate-700 font-bold"
                 >
-                  {instrument}
+                  {instrument} ({confirmedCount})
                 </div>
               );
             })}
@@ -613,7 +429,7 @@ export default function App() {
                       />
                     </div>
                     <span 
-                      className={`text-[10px] sm:text-xs md:text-sm whitespace-nowrap transition-colors duration-200 [writing-mode:vertical-rl] rotate-180 ${activeZone?.band === band.name ? 'text-blue-600 font-extrabold' : 'text-slate-800 font-semibold'}`} 
+                      className="text-[10px] sm:text-xs md:text-sm whitespace-nowrap transition-colors duration-200 [writing-mode:vertical-rl] rotate-180 text-slate-800 font-semibold" 
                       title={band.name}
                     >
                       {band.name} <span className="font-normal text-slate-500 ml-1">({bandStudentsCount})</span>
@@ -621,55 +437,40 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Drop Zones (Cells) */}
+                {/* Cells */}
                 {INSTRUMENTS.map((instrument) => {
                   const cellStudents = students
                     .filter(s => s.band === band.name && s.instrument === instrument)
                     .sort((a, b) => {
-                      const posA = a.position ?? 0;
-                      const posB = b.position ?? 0;
-                      return posA !== posB ? posA - posB : a.id.localeCompare(b.id);
+                      const isGrayA = band.name !== 'Confirmed' && confirmedNames.has(a.name.toLowerCase().trim());
+                      const isGrayB = band.name !== 'Confirmed' && confirmedNames.has(b.name.toLowerCase().trim());
+                      
+                      // Sort grayed out to the bottom
+                      if (isGrayA !== isGrayB) return isGrayA ? 1 : -1;
+                      
+                      // Sort alphabetically by first name
+                      return a.name.localeCompare(b.name);
                     });
-
-                  const isCellActive = activeZone?.band === band.name && activeZone?.instrument === instrument;
 
                   return (
                     <div
                       key={`${band.name}-${instrument}`}
-                      className={`group/cell flex-1 w-0 min-w-[160px] min-h-[60px] border-r border-slate-300 last:border-r-0 flex flex-col relative pt-1 pb-6 px-0.5 sm:px-2 transition-all duration-200 ${isCellActive ? 'bg-blue-50 ring-2 ring-blue-400 ring-inset' : ''}`}
-                      onDragOver={(e) => {
-                        handleDragOver(e);
-                        if (activeZone?.band !== band.name || activeZone?.instrument !== instrument) {
-                          setActiveZone({ band: band.name, instrument });
-                        }
-                      }}
-                      onDrop={(e) => handleCellDrop(e, band.name, instrument)}
+                      className="group/cell flex-1 w-0 min-w-[160px] min-h-[60px] border-r border-slate-300 last:border-r-0 flex flex-col relative pt-1 pb-2 px-0.5 sm:px-2 transition-all duration-200"
                     >
-
-                      {cellStudents.map((student, index) => (
-                        <StudentCard 
-                          key={student.id} 
-                          student={student} 
-                          color={student.color || band.color}
-                          prevPos={index > 0 ? cellStudents[index - 1].position ?? 0 : null}
-                          nextPos={index < cellStudents.length - 1 ? cellStudents[index + 1].position ?? 0 : null}
-                          draggedStudentId={draggedStudentId}
-                          onDragStart={handleDragStart} 
-                          onDragEnd={handleDragEnd}
-                          onReorder={(noteId, newPos) => handleReorder(noteId, band.name, instrument, newPos)}
-                          onEditName={handleNameEdit} 
-                          onCycleGrade={handleCycleGrade}
-                          onContextMenu={handleContextMenu}
-                        />
-                      ))}
-
-                      <button
-                        onClick={() => handleAddStudent(band.name, instrument)}
-                        title="Add Student"
-                        className="absolute bottom-1 right-1 w-4 h-4 sm:w-5 sm:h-5 rounded-full border border-dashed border-slate-400 text-slate-400 hover:text-slate-700 hover:border-slate-500 hover:bg-slate-100 transition-all flex items-center justify-center text-sm sm:text-lg leading-none pb-0.5 opacity-0 group-hover/cell:opacity-100"
-                      >
-                        +
-                      </button>
+                      {cellStudents.map((student) => {
+                        const isGrayedOut = band.name !== 'Confirmed' && confirmedNames.has(student.name.toLowerCase().trim());
+                        
+                        return (
+                          <StudentCard 
+                            key={student.id} 
+                            student={student} 
+                            color={student.color || band.color}
+                            isGrayedOut={isGrayedOut}
+                            onUpdateComment={handleUpdateComment}
+                            onContextMenu={handleContextMenu}
+                          />
+                        );
+                      })}
                     </div>
                   );
                 })}
@@ -684,26 +485,83 @@ export default function App() {
 }
 
 // ==========================================
-// DROP INDICATOR SUB-COMPONENT
+// ADD RECRUIT MODAL SUB-COMPONENT
 // ==========================================
-function DropIndicator({ onDrop }: { onDrop: (e: React.DragEvent) => void }) {
-  const [isOver, setIsOver] = useState(false);
+function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, choices: string[]) => void }) {
+  const [name, setName] = useState('');
+  const [grade, setGrade] = useState<GradeLevel>('6');
+  const [c1, setC1] = useState(INSTRUMENTS[0]);
+  const [c2, setC2] = useState('');
+  const [c3, setC3] = useState('');
+
+  const choicesData = [
+    { label: '1st Choice Instrument', value: c1, setter: setC1, required: true },
+    { label: '2nd Choice Instrument', value: c2, setter: setC2, required: false },
+    { label: '3rd Choice Instrument', value: c3, setter: setC3, required: false },
+  ];
+
   return (
-    <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        setIsOver(true);
-      }}
-      onDragLeave={() => setIsOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation(); // Prevent the cell drop handler from firing
-        setIsOver(false);
-        onDrop(e);
-      }}
-      className="w-full h-3 -my-1.5 z-10 relative flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
-    >
-      <div className={`w-full h-1 rounded-full transition-colors ${isOver ? 'bg-blue-500' : 'bg-transparent'}`} />
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6">
+        <h3 className="text-xl font-bold mb-4">Add New Recruit</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Student Name</label>
+            <input 
+              value={name} 
+              onChange={e => setName(e.target.value)} 
+              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+              placeholder="Enter name..." 
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Grade Level</label>
+            <div className="flex gap-4">
+              {(['6', '7', '8'] as GradeLevel[]).map(g => (
+                <label key={g} className="flex items-center gap-1.5 cursor-pointer">
+                  <input 
+                    type="radio" 
+                    name="grade" 
+                    value={g} 
+                    checked={grade === g} 
+                    onChange={() => setGrade(g)} 
+                    className="w-4 h-4 text-blue-600" 
+                  />
+                  <span className="text-sm font-medium">{g}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {choicesData.map((choice, i) => (
+            <div key={i}>
+              <label className="block text-sm font-medium mb-1">{choice.label}</label>
+              <select 
+                value={choice.value} 
+                onChange={e => choice.setter(e.target.value)} 
+                className="w-full border p-2 rounded"
+              >
+                {!choice.required && <option value="">-- Optional --</option>}
+                {INSTRUMENTS.map(ins => {
+                  const isSelectedElsewhere = (i !== 0 && ins === c1) || (i !== 1 && ins === c2) || (i !== 2 && ins === c3);
+                  return <option key={ins} value={ins} disabled={isSelectedElsewhere}>{ins}</option>;
+                })}
+              </select>
+            </div>
+          ))}
+          <div className="flex justify-end gap-3 mt-6">
+            <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
+            <button 
+              disabled={!name.trim() || !c1} 
+              onClick={() => onSubmit(name, grade, [c1, c2, c3])} 
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
+            >
+              Add to Choices
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -760,119 +618,115 @@ function AuthScreen() {
 interface StudentCardProps {
   student: Student;
   color: string;
-  prevPos: number | null;
-  nextPos: number | null;
-  draggedStudentId: string | null;
-  onDragStart: (e: React.DragEvent, id: string) => void;
-  onDragEnd: () => void;
-  onReorder: (id: string, newPos: number) => void;
-  onEditName: (id: string, newName: string) => void;
-  onCycleGrade: (id: string, currentGrade: GradeLevel) => void;
+  isGrayedOut?: boolean;
+  onUpdateComment: (id: string, comment: string) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
 }
 
-function StudentCard({ student, color, prevPos, nextPos, draggedStudentId, onDragStart, onDragEnd, onReorder, onEditName, onCycleGrade, onContextMenu }: StudentCardProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [editValue, setEditValue] = useState(student.name);
-  const [dropIndicator, setDropIndicator] = useState<'top' | 'bottom' | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+function StudentCard({ student, color, isGrayedOut, onUpdateComment, onContextMenu }: StudentCardProps) {
+  const [isEditingComment, setIsEditingComment] = useState(false);
+  const [commentValue, setCommentValue] = useState(student.comment || '');
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (isEditing && inputRef.current) {
+    if (isEditingComment && inputRef.current) {
       inputRef.current.focus();
-      inputRef.current.select();
+      inputRef.current.selectionStart = inputRef.current.value.length;
     }
-  }, [isEditing]);
+  }, [isEditingComment]);
+
+  const handleMouseEnter = (e: React.MouseEvent) => {
+    if (!student.comment) return;
+    setMousePos({ x: e.clientX, y: e.clientY });
+    hoverTimeoutRef.current = setTimeout(() => {
+      setShowTooltip(true);
+    }, 100);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (student.comment && !showTooltip) {
+      setMousePos({ x: e.clientX, y: e.clientY });
+    }
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    setShowTooltip(false);
+  };
+
+  const handleDoubleClick = () => {
+    setIsEditingComment(true);
+    setShowTooltip(false);
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+  };
 
   const handleBlurOrSubmit = () => {
-    setIsEditing(false);
-    if (editValue !== student.name) onEditName(student.id, editValue);
+    setIsEditingComment(false);
+    if (commentValue !== (student.comment || '')) {
+      onUpdateComment(student.id, commentValue);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleBlurOrSubmit();
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleBlurOrSubmit();
+    }
     if (e.key === 'Escape') {
-      setEditValue(student.name);
-      setIsEditing(false);
+      setCommentValue(student.comment || '');
+      setIsEditingComment(false);
     }
-  };
-
-  const handleGradeClick = (e: React.MouseEvent) => {
-    e.stopPropagation(); 
-    onCycleGrade(student.id, student.grade);
-  };
-
-  // --- Card Reordering Drop Handlers ---
-  const handleDragOver = (e: React.DragEvent) => {
-    if (isEditing) return;
-    e.preventDefault();
-    e.stopPropagation(); 
-    
-    // Calculate if we are hovering the top half or bottom half of the card
-    const rect = e.currentTarget.getBoundingClientRect();
-    const midPointY = rect.top + rect.height / 2;
-    setDropIndicator(e.clientY < midPointY ? 'top' : 'bottom');
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation(); 
-    const side = dropIndicator;
-    setDropIndicator(null);
-
-    const incomingStudentId = e.dataTransfer.getData('text/plain') || draggedStudentId;
-    if (!incomingStudentId || incomingStudentId === student.id) return; 
-
-    // Calculate a safe position, ensuring no zeros clash
-    const currentPos = student.position ?? 0;
-    const pPos = prevPos !== null ? prevPos : currentPos - 1000;
-    const nPos = nextPos !== null ? nextPos : currentPos + 1000;
-
-    let newPos: number;
-    if (side === 'top') {
-      newPos = pPos === currentPos ? currentPos - 500 : (pPos + currentPos) / 2;
-    } else {
-      newPos = nPos === currentPos ? currentPos + 500 : (nPos + currentPos) / 2;
-    }
-    
-    onReorder(incomingStudentId, newPos);
   };
 
   return (
     <div 
       className="relative py-1 w-full"
-      onDragOver={handleDragOver}
-      onDragLeave={() => setDropIndicator(null)}
-      onDrop={handleDrop}
       onContextMenu={(e) => onContextMenu(e, student.id)}
+      onMouseEnter={handleMouseEnter}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
     >
-      {dropIndicator === 'top' && <div className="absolute top-0 left-0 right-0 h-1 bg-blue-600 rounded-full z-10 pointer-events-none" />}
-      {dropIndicator === 'bottom' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-blue-600 rounded-full z-10 pointer-events-none" />}
+      {/* Absolute Hover Tooltip fixed to mouse position */}
+      {showTooltip && student.comment && !isEditingComment && (
+        <div 
+          className="fixed z-50 bg-yellow-100 border border-yellow-300 text-yellow-900 text-xs p-1.5 rounded shadow-lg whitespace-pre-wrap break-words min-w-[120px] max-w-[250px] pointer-events-none"
+          style={{ top: mousePos.y + 15, left: mousePos.x }}
+        >
+          {student.comment}
+        </div>
+      )}
 
       <div
-        draggable={!isEditing}
-        onDragStart={(e) => onDragStart(e, student.id)}
-        onDragEnd={onDragEnd}
-        onDoubleClick={() => setIsEditing(true)}
-        style={{ backgroundColor: color }}
-        className="group relative flex items-center justify-between p-1 sm:p-1.5 px-1.5 sm:px-2 rounded-md shadow-sm border border-black/10 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow z-10 w-full"
+        style={{ 
+          backgroundColor: color,
+          ...(isGrayedOut ? { backgroundImage: 'repeating-linear-gradient(45deg, rgba(0,0,0,0.05), rgba(0,0,0,0.05) 4px, transparent 4px, transparent 8px)' } : {})
+        }}
+        className={`group relative flex items-center justify-between p-1 sm:p-1.5 px-1.5 sm:px-2 rounded-md shadow-sm border border-black/10 hover:shadow-md transition-all z-10 w-full ${isGrayedOut ? 'opacity-40 grayscale-[0.5]' : ''}`}
+        onDoubleClick={handleDoubleClick}
       >
-        <button 
-          onClick={handleGradeClick}
-          title="Click to change grade"
-          className="absolute -top-1.5 -right-1 sm:-right-1.5 bg-slate-400 hover:bg-slate-800 text-white text-[9px] sm:text-[10px] font-bold w-3 h-3 sm:w-4 sm:h-4 rounded-full flex items-center justify-center shadow-sm cursor-pointer transition-colors"
-        >
+        <span className="absolute -top-1.5 -right-1 sm:-right-1.5 bg-slate-400 text-white text-[9px] sm:text-[10px] font-bold w-3 h-3 sm:w-4 sm:h-4 rounded-full flex items-center justify-center shadow-sm">
           {student.grade}
-        </button>
+        </span>
 
-        {isEditing ? (
-          <input
-            ref={inputRef} value={editValue} onChange={(e) => setEditValue(e.target.value)}
-            onBlur={handleBlurOrSubmit} onKeyDown={handleKeyDown}
-            className="w-full text-[10px] sm:text-xs font-medium bg-white/70 border border-black/20 rounded px-1 outline-none"
+        {isEditingComment ? (
+          <textarea
+            ref={inputRef}
+            value={commentValue}
+            onChange={(e) => setCommentValue(e.target.value)}
+            onBlur={handleBlurOrSubmit}
+            onKeyDown={handleKeyDown}
+            className="w-full text-[10px] sm:text-xs font-medium bg-white border border-blue-400 rounded px-1 py-0.5 outline-none resize-none overflow-hidden min-h-[40px] pr-3 sm:pr-4"
+            placeholder="Add comment..."
+            rows={2}
           />
         ) : (
-          <span className="text-[10px] sm:text-xs font-medium text-slate-800 truncate leading-tight mr-3 sm:mr-4">{student.name}</span>
+          <span className="text-[10px] sm:text-xs font-medium text-slate-800 truncate leading-tight mr-3 sm:mr-4 select-none">
+            {student.name}
+          </span>
         )}
       </div>
     </div>
