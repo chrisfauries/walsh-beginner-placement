@@ -36,6 +36,7 @@ const DEFAULT_BANDS: Band[] = [
   { name: '1st Choice', color: '#fef08a' }, 
   { name: '2nd Choice', color: '#fed7aa' }, 
   { name: '3rd Choice', color: '#bae6fd' }, 
+  { name: 'Feedback', color: '#f3f4f6' }, 
 ];
 
 const INSTRUMENTS = [
@@ -55,6 +56,9 @@ export default function App() {
   const [students, setStudents] = useState<Student[]>([]);
   const [bands, setBands] = useState<Band[]>(DEFAULT_BANDS);
   
+  // --- Search State ---
+  const [searchTerm, setSearchTerm] = useState('');
+
   // --- Context Menu State ---
   const [contextMenu, setContextMenu] = useState<{mouseX: number, mouseY: number, studentId: string} | null>(null);
   const [isMainMenuOpen, setIsMainMenuOpen] = useState(false);
@@ -62,6 +66,7 @@ export default function App() {
   // --- Modal States ---
   const [isClearModalOpen, setIsClearModalOpen] = useState(false);
   const [isAddRecruitOpen, setIsAddRecruitOpen] = useState(false);
+  const [feedbackModalData, setFeedbackModalData] = useState<{band: string, instrument: string} | null>(null);
 
   // --- Listen to Authentication Status ---
   useEffect(() => {
@@ -151,6 +156,25 @@ export default function App() {
     setIsAddRecruitOpen(false);
   };
 
+  const submitFeedbackStudent = async (name: string, grade: GradeLevel, comment: string) => {
+    if (!feedbackModalData || !name.trim()) return;
+    
+    const { band, instrument } = feedbackModalData;
+    const cellStudents = students.filter(s => s.band === band && s.instrument === instrument);
+    const maxPos = cellStudents.length > 0 ? Math.max(...cellStudents.map(s => s.position ?? 0)) : 0;
+    
+    await push(ref(db, 'students'), { 
+      name: name.trim(), 
+      instrument, 
+      band, 
+      grade,
+      comment: comment.trim() || null,
+      position: maxPos + 1000 
+    });
+    
+    setFeedbackModalData(null);
+  };
+
   const handleColorChange = async (bandName: string, newColor: string) => {
     await update(ref(db, `bands/${bandName}`), { color: newColor });
   };
@@ -196,16 +220,22 @@ export default function App() {
       return;
     }
     
-    const targetName = studentToDelete.name.toLowerCase().trim();
-    const updates: any = {};
-    
-    students.forEach(s => {
-      if (s.name.toLowerCase().trim() === targetName) {
-        updates[`students/${s.id}`] = null;
-      }
-    });
-    
-    await update(ref(db), updates);
+    if (studentToDelete.band === 'Feedback') {
+      // If it's a feedback entry, only delete this specific entry
+      await remove(ref(db, `students/${studentId}`));
+    } else {
+      // Otherwise, delete all instances of this student across choices/confirmed
+      const targetName = studentToDelete.name.toLowerCase().trim();
+      const updates: any = {};
+      
+      students.forEach(s => {
+        if (s.name.toLowerCase().trim() === targetName) {
+          updates[`students/${s.id}`] = null;
+        }
+      });
+      
+      await update(ref(db), updates);
+    }
     closeContextMenu();
   };
 
@@ -249,11 +279,18 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 p-2 sm:p-4 font-sans text-slate-800 pb-12 flex flex-col relative">
       
-      {/* Add Recruit Modal */}
+      {/* Modals */}
       {isAddRecruitOpen && (
         <AddRecruitModal 
           onClose={() => setIsAddRecruitOpen(false)} 
           onSubmit={handleAddRecruit} 
+        />
+      )}
+      
+      {feedbackModalData && (
+        <AddFeedbackModal
+          onClose={() => setFeedbackModalData(null)}
+          onSubmit={submitFeedbackStudent}
         />
       )}
 
@@ -269,7 +306,7 @@ export default function App() {
             className="fixed z-50 bg-white rounded-lg shadow-xl border border-slate-200 py-1 min-w-[160px] flex flex-col overflow-hidden"
             style={{ top: contextMenu.mouseY, left: contextMenu.mouseX }}
           >
-            {contextMenuStudent.band !== 'Confirmed' && (
+            {contextMenuStudent.band !== 'Confirmed' && contextMenuStudent.band !== 'Feedback' && (
               <button 
                 className="w-full text-left px-4 py-2 text-sm text-green-600 font-bold hover:bg-green-50 transition-colors"
                 onClick={() => handleMoveToConfirmed(contextMenuStudent)}
@@ -291,7 +328,7 @@ export default function App() {
               className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
               onClick={() => handleDeleteStudent(contextMenu.studentId)}
             >
-              Delete Student
+              {contextMenuStudent.band === 'Feedback' ? 'Delete Feedback' : 'Delete Student'}
             </button>
           </div>
         </>
@@ -338,16 +375,32 @@ export default function App() {
           <span className="text-2xl font-bold">+</span>
         </button>
 
-        <h1 className="text-lg font-bold text-slate-900">Band Placement</h1>
+        <h1 className="text-lg font-bold text-slate-900 hidden sm:block">Band Placement</h1>
         
-        <button 
-          onClick={() => setIsMainMenuOpen(!isMainMenuOpen)}
-          className="p-1.5 hover:bg-slate-100 rounded-md transition-colors text-slate-600"
-        >
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Search Bar */}
+          <div className="relative flex items-center">
+            <svg className="w-4 h-4 absolute left-2.5 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input 
+              type="text" 
+              placeholder="Search..." 
+              value={searchTerm} 
+              onChange={e => setSearchTerm(e.target.value)}
+              className="pl-8 pr-3 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 w-32 sm:w-48 bg-slate-50 hover:bg-white transition-colors"
+            />
+          </div>
+
+          <button 
+            onClick={() => setIsMainMenuOpen(!isMainMenuOpen)}
+            className="p-1.5 hover:bg-slate-100 rounded-md transition-colors text-slate-600"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </div>
 
         {isMainMenuOpen && (
           <>
@@ -425,7 +478,7 @@ export default function App() {
                         value={band.color} 
                         onChange={(e) => handleColorChange(band.name, e.target.value)}
                         className="absolute -top-2 -left-2 w-8 h-8 cursor-pointer"
-                        title="Change Band Color"
+                        title="Change Row Color"
                       />
                     </div>
                     <span 
@@ -455,9 +508,15 @@ export default function App() {
                   return (
                     <div
                       key={`${band.name}-${instrument}`}
-                      className="group/cell flex-1 w-0 min-w-[160px] min-h-[60px] border-r border-slate-300 last:border-r-0 flex flex-col relative pt-1 pb-2 px-0.5 sm:px-2 transition-all duration-200"
+                      className="group/cell flex-1 w-0 min-w-[160px] min-h-[60px] border-r border-slate-300 last:border-r-0 flex flex-col relative pt-1 pb-6 px-0.5 sm:px-2 transition-all duration-200"
                     >
                       {cellStudents.map((student) => {
+                        const isSearchMatch = searchTerm.trim() !== '' && student.name.toLowerCase().includes(searchTerm.toLowerCase());
+                        const isSearchHidden = searchTerm.trim() !== '' && !isSearchMatch;
+                        
+                        // Hide non-matching tags completely
+                        if (isSearchHidden) return null;
+
                         const isGrayedOut = band.name !== 'Confirmed' && confirmedNames.has(student.name.toLowerCase().trim());
                         
                         return (
@@ -466,11 +525,23 @@ export default function App() {
                             student={student} 
                             color={student.color || band.color}
                             isGrayedOut={isGrayedOut}
+                            isSearchMatch={isSearchMatch}
                             onUpdateComment={handleUpdateComment}
                             onContextMenu={handleContextMenu}
                           />
                         );
                       })}
+
+                      {/* Display free-add '+' button ONLY in Feedback row */}
+                      {band.name === 'Feedback' && (
+                        <button
+                          onClick={() => setFeedbackModalData({ band: band.name, instrument })}
+                          title="Add Feedback Entry"
+                          className="absolute bottom-1 right-1 w-4 h-4 sm:w-5 sm:h-5 rounded-full border border-dashed border-slate-400 text-slate-400 hover:text-slate-700 hover:border-slate-500 hover:bg-slate-100 transition-all flex items-center justify-center text-sm sm:text-lg leading-none pb-0.5 opacity-0 group-hover/cell:opacity-100"
+                        >
+                          +
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -567,6 +638,72 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
 }
 
 // ==========================================
+// ADD FEEDBACK MODAL SUB-COMPONENT
+// ==========================================
+function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, comment: string) => void }) {
+  const [name, setName] = useState('');
+  const [grade, setGrade] = useState<GradeLevel>('6');
+  const [comment, setComment] = useState('');
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6">
+        <h3 className="text-xl font-bold mb-4">Add Feedback Entry</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Student Name</label>
+            <input 
+              value={name} 
+              onChange={e => setName(e.target.value)} 
+              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+              placeholder="Enter name..." 
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-2">Grade Level</label>
+            <div className="flex gap-4">
+              {(['6', '7', '8'] as GradeLevel[]).map(g => (
+                <label key={g} className="flex items-center gap-1.5 cursor-pointer">
+                  <input 
+                    type="radio" 
+                    name="grade" 
+                    value={g} 
+                    checked={grade === g} 
+                    onChange={() => setGrade(g)} 
+                    className="w-4 h-4 text-blue-600" 
+                  />
+                  <span className="text-sm font-medium">{g}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Comment</label>
+            <textarea 
+              value={comment} 
+              onChange={e => setComment(e.target.value)} 
+              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none resize-none" 
+              placeholder="Add feedback comment..."
+              rows={3}
+            />
+          </div>
+          <div className="flex justify-end gap-3 mt-6">
+            <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
+            <button 
+              disabled={!name.trim()} 
+              onClick={() => onSubmit(name, grade, comment)} 
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
+            >
+              Add Feedback
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
 // AUTH SCREEN SUB-COMPONENT
 // ==========================================
 function AuthScreen() {
@@ -619,11 +756,12 @@ interface StudentCardProps {
   student: Student;
   color: string;
   isGrayedOut?: boolean;
+  isSearchMatch?: boolean;
   onUpdateComment: (id: string, comment: string) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
 }
 
-function StudentCard({ student, color, isGrayedOut, onUpdateComment, onContextMenu }: StudentCardProps) {
+function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComment, onContextMenu }: StudentCardProps) {
   const [isEditingComment, setIsEditingComment] = useState(false);
   const [commentValue, setCommentValue] = useState(student.comment || '');
   const [showTooltip, setShowTooltip] = useState(false);
@@ -705,7 +843,10 @@ function StudentCard({ student, color, isGrayedOut, onUpdateComment, onContextMe
           backgroundColor: color,
           ...(isGrayedOut ? { backgroundImage: 'repeating-linear-gradient(45deg, rgba(0,0,0,0.05), rgba(0,0,0,0.05) 4px, transparent 4px, transparent 8px)' } : {})
         }}
-        className={`group relative flex items-center justify-between p-1 sm:p-1.5 px-1.5 sm:px-2 rounded-md shadow-sm border border-black/10 hover:shadow-md transition-all z-10 w-full ${isGrayedOut ? 'opacity-40 grayscale-[0.5]' : ''}`}
+        className={`group relative flex items-center justify-between p-1 sm:p-1.5 px-1.5 sm:px-2 rounded-md transition-all z-10 w-full 
+          ${isGrayedOut ? 'opacity-40 grayscale-[0.5]' : ''} 
+          ${isSearchMatch ? 'border-blue-500 ring-2 ring-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.6)]' : 'border border-black/10 shadow-sm hover:shadow-md'}
+        `}
         onDoubleClick={handleDoubleClick}
       >
         <span className="absolute -top-1.5 -right-1 sm:-right-1.5 bg-slate-400 text-white text-[9px] sm:text-[10px] font-bold w-3 h-3 sm:w-4 sm:h-4 rounded-full flex items-center justify-center shadow-sm">
