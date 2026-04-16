@@ -306,7 +306,7 @@ export default function App() {
             className="fixed z-50 bg-white rounded-lg shadow-xl border border-slate-200 py-1 min-w-[160px] flex flex-col overflow-hidden"
             style={{ top: contextMenu.mouseY, left: contextMenu.mouseX }}
           >
-            {contextMenuStudent.band !== 'Confirmed' && contextMenuStudent.band !== 'Feedback' && (
+            {contextMenuStudent.band !== 'Confirmed' && (
               <button 
                 className="w-full text-left px-4 py-2 text-sm text-green-600 font-bold hover:bg-green-50 transition-colors"
                 onClick={() => handleMoveToConfirmed(contextMenuStudent)}
