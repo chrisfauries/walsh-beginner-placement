@@ -20,6 +20,7 @@ interface Student {
   instrument: string;
   band: string;
   grade: GradeLevel;
+  personality?: string; 
   position?: number;
   color?: string; 
   previousBand?: string; 
@@ -29,6 +30,16 @@ interface Student {
 interface Band {
   name: string;
   color: string;
+}
+
+interface EditModalData {
+  oldTargetName: string;
+  name: string;
+  grade: GradeLevel;
+  personality: string;
+  c1: string;
+  c2: string;
+  c3: string;
 }
 
 const DEFAULT_BANDS: Band[] = [
@@ -66,6 +77,7 @@ export default function App() {
   // --- Modal States ---
   const [isClearModalOpen, setIsClearModalOpen] = useState(false);
   const [isAddRecruitOpen, setIsAddRecruitOpen] = useState(false);
+  const [editModalData, setEditModalData] = useState<EditModalData | null>(null);
   const [feedbackModalData, setFeedbackModalData] = useState<{band: string, instrument: string} | null>(null);
 
   // --- Listen to Authentication Status ---
@@ -135,7 +147,7 @@ export default function App() {
       .map(s => s.name.toLowerCase().trim())
   );
 
-  const handleAddRecruit = async (name: string, grade: GradeLevel, choices: string[]) => {
+  const handleAddRecruit = async (name: string, grade: GradeLevel, personality: string, choices: string[]) => {
     const updates: any = {};
     const rowNames = ['1st Choice', '2nd Choice', '3rd Choice'];
     
@@ -147,6 +159,7 @@ export default function App() {
           instrument, 
           band: rowNames[index], 
           grade: grade,
+          personality: personality,
           position: Date.now() + index 
         };
       }
@@ -156,7 +169,66 @@ export default function App() {
     setIsAddRecruitOpen(false);
   };
 
-  const submitFeedbackStudent = async (name: string, grade: GradeLevel, comment: string) => {
+  const handleEditStudent = async (
+    oldTargetName: string, 
+    newName: string, 
+    newGrade: GradeLevel, 
+    newPersonality: string, 
+    newChoices: string[]
+  ) => {
+    const updates: any = {};
+    const choiceBands = ['1st Choice', '2nd Choice', '3rd Choice'];
+    const newChoicesCopy = [...newChoices];
+    
+    const existingRecords = students.filter(s => s.name.toLowerCase().trim() === oldTargetName);
+    
+    existingRecords.forEach(record => {
+      const { id, ...rest } = record;
+      const dataToSave = { 
+         ...rest, 
+         name: newName.trim(), 
+         grade: newGrade, 
+         personality: newPersonality 
+      };
+      
+      const effectiveBand = record.band === 'Confirmed' && record.previousBand ? record.previousBand : record.band;
+      const choiceIndex = choiceBands.indexOf(effectiveBand);
+
+      if (choiceIndex !== -1) {
+         const newInst = newChoicesCopy[choiceIndex];
+         if (newInst) {
+             dataToSave.instrument = newInst;
+             updates[`students/${id}`] = dataToSave;
+         } else {
+             updates[`students/${id}`] = null; // Delete if choice removed
+         }
+         newChoicesCopy[choiceIndex] = ''; // Mark as processed
+      } else {
+         // Fallback for Feedback rows
+         updates[`students/${id}`] = dataToSave;
+      }
+    });
+    
+    // Create new records for newly added choices that didn't exist before
+    newChoicesCopy.forEach((inst, index) => {
+      if (inst) {
+          const newKey = push(ref(db, 'students')).key;
+          updates[`students/${newKey}`] = {
+             name: newName.trim(),
+             instrument: inst,
+             band: choiceBands[index],
+             grade: newGrade,
+             personality: newPersonality,
+             position: Date.now() + index
+          };
+      }
+    });
+    
+    await update(ref(db), updates);
+    setEditModalData(null);
+  };
+
+  const submitFeedbackStudent = async (name: string, grade: GradeLevel, personality: string, comment: string) => {
     if (!feedbackModalData || !name.trim()) return;
     
     const { band, instrument } = feedbackModalData;
@@ -168,6 +240,7 @@ export default function App() {
       instrument, 
       band, 
       grade,
+      personality,
       comment: comment.trim() || null,
       position: maxPos + 1000 
     });
@@ -239,9 +312,31 @@ export default function App() {
     closeContextMenu();
   };
 
+  const handleOpenEditModal = (student: Student) => {
+    const targetName = student.name.toLowerCase().trim();
+    const records = students.filter(s => s.name.toLowerCase().trim() === targetName);
+    
+    let c1 = '', c2 = '', c3 = '';
+    records.forEach(r => {
+       const band = r.band === 'Confirmed' && r.previousBand ? r.previousBand : r.band;
+       if (band === '1st Choice') c1 = r.instrument;
+       if (band === '2nd Choice') c2 = r.instrument;
+       if (band === '3rd Choice') c3 = r.instrument;
+    });
+    
+    setEditModalData({
+       oldTargetName: targetName,
+       name: student.name,
+       grade: student.grade,
+       personality: student.personality || 'gray',
+       c1, c2, c3
+    });
+    closeContextMenu();
+  };
+
   // --- Export CSV ---
   const handleExportCSV = () => {
-    const headers = ['Name', 'Instrument', 'Band', 'Grade', 'Position', 'Comment'];
+    const headers = ['Name', 'Instrument', 'Band', 'Grade', 'Personality', 'Position', 'Comment'];
     const sortedStudents = [...students].sort((a, b) => {
       if (a.band !== b.band) return a.band.localeCompare(b.band);
       if (a.instrument !== b.instrument) return a.instrument.localeCompare(b.instrument);
@@ -253,7 +348,7 @@ export default function App() {
       return a.name.localeCompare(b.name);
     });
 
-    const rows = sortedStudents.map(s => `"${s.name}","${s.instrument}","${s.band}","${s.grade}","${s.position ?? 0}","${(s.comment || '').replace(/"/g, '""')}"`);
+    const rows = sortedStudents.map(s => `"${s.name}","${s.instrument}","${s.band}","${s.grade}","${s.personality || 'gray'}","${s.position ?? 0}","${(s.comment || '').replace(/"/g, '""')}"`);
     const csvContent = [headers.join(','), ...rows].join('\n');
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -285,6 +380,14 @@ export default function App() {
         <AddRecruitModal 
           onClose={() => setIsAddRecruitOpen(false)} 
           onSubmit={handleAddRecruit} 
+        />
+      )}
+
+      {editModalData && (
+        <EditStudentModal
+          initialData={editModalData}
+          onClose={() => setEditModalData(null)}
+          onSubmit={handleEditStudent}
         />
       )}
       
@@ -330,6 +433,13 @@ export default function App() {
                 Move back to {contextMenuStudent.previousBand}
               </button>
             )}
+
+            <button 
+              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 transition-colors"
+              onClick={() => handleOpenEditModal(contextMenuStudent)}
+            >
+              Edit Student
+            </button>
             
             <button 
               className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
@@ -565,9 +675,10 @@ export default function App() {
 // ==========================================
 // ADD RECRUIT MODAL SUB-COMPONENT
 // ==========================================
-function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, choices: string[]) => void }) {
+function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, personality: string, choices: string[]) => void }) {
   const [name, setName] = useState('');
   const [grade, setGrade] = useState<GradeLevel>('6');
+  const [personality, setPersonality] = useState('gray');
   const [c1, setC1] = useState(INSTRUMENTS[0]);
   const [c2, setC2] = useState('');
   const [c3, setC3] = useState('');
@@ -612,6 +723,30 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
             </div>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium mb-2">Personality Color</label>
+            <div className="flex gap-4">
+              {[
+                { val: 'gray', label: 'Gray', color: 'bg-slate-400' },
+                { val: 'blue', label: 'Blue', color: 'bg-blue-500' },
+                { val: 'yellow', label: 'Yellow', color: 'bg-yellow-400' },
+                { val: 'red', label: 'Red', color: 'bg-red-500' },
+              ].map(p => (
+                <label key={p.val} className="flex items-center gap-1.5 cursor-pointer" title={p.label}>
+                  <input 
+                    type="radio" 
+                    name="add_personality" 
+                    value={p.val} 
+                    checked={personality === p.val} 
+                    onChange={() => setPersonality(p.val)} 
+                    className="w-4 h-4 text-blue-600" 
+                  />
+                  <div className={`w-4 h-4 rounded-full ${p.color} border border-black/10`}></div>
+                </label>
+              ))}
+            </div>
+          </div>
+
           {choicesData.map((choice, i) => (
             <div key={i}>
               <label className="block text-sm font-medium mb-1">{choice.label}</label>
@@ -632,7 +767,7 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
             <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
             <button 
               disabled={!name.trim() || !c1} 
-              onClick={() => onSubmit(name, grade, [c1, c2, c3])} 
+              onClick={() => onSubmit(name, grade, personality, [c1, c2, c3])} 
               className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
             >
               Add to Choices
@@ -645,11 +780,127 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
 }
 
 // ==========================================
+// EDIT STUDENT MODAL SUB-COMPONENT
+// ==========================================
+function EditStudentModal({ 
+  initialData, 
+  onClose, 
+  onSubmit 
+}: { 
+  initialData: EditModalData, 
+  onClose: () => void, 
+  onSubmit: (oldTargetName: string, name: string, grade: GradeLevel, personality: string, choices: string[]) => void 
+}) {
+  const [name, setName] = useState(initialData.name);
+  const [grade, setGrade] = useState<GradeLevel>(initialData.grade);
+  const [personality, setPersonality] = useState(initialData.personality);
+  const [c1, setC1] = useState(initialData.c1);
+  const [c2, setC2] = useState(initialData.c2);
+  const [c3, setC3] = useState(initialData.c3);
+
+  const choicesData = [
+    { label: '1st Choice Instrument', value: c1, setter: setC1, required: true },
+    { label: '2nd Choice Instrument', value: c2, setter: setC2, required: false },
+    { label: '3rd Choice Instrument', value: c3, setter: setC3, required: false },
+  ];
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6">
+        <h3 className="text-xl font-bold mb-4">Edit Student</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Student Name</label>
+            <input 
+              value={name} 
+              onChange={e => setName(e.target.value)} 
+              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+              placeholder="Enter name..." 
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Grade Level</label>
+            <div className="flex gap-4">
+              {(['6', '7', '8'] as GradeLevel[]).map(g => (
+                <label key={g} className="flex items-center gap-1.5 cursor-pointer">
+                  <input 
+                    type="radio" 
+                    name="edit_grade" 
+                    value={g} 
+                    checked={grade === g} 
+                    onChange={() => setGrade(g)} 
+                    className="w-4 h-4 text-blue-600" 
+                  />
+                  <span className="text-sm font-medium">{g}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Personality Color</label>
+            <div className="flex gap-4">
+              {[
+                { val: 'gray', label: 'Gray', color: 'bg-slate-400' },
+                { val: 'blue', label: 'Blue', color: 'bg-blue-500' },
+                { val: 'yellow', label: 'Yellow', color: 'bg-yellow-400' },
+                { val: 'red', label: 'Red', color: 'bg-red-500' },
+              ].map(p => (
+                <label key={p.val} className="flex items-center gap-1.5 cursor-pointer" title={p.label}>
+                  <input 
+                    type="radio" 
+                    name="edit_personality" 
+                    value={p.val} 
+                    checked={personality === p.val} 
+                    onChange={() => setPersonality(p.val)} 
+                    className="w-4 h-4 text-blue-600" 
+                  />
+                  <div className={`w-4 h-4 rounded-full ${p.color} border border-black/10`}></div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {choicesData.map((choice, i) => (
+            <div key={i}>
+              <label className="block text-sm font-medium mb-1">{choice.label}</label>
+              <select 
+                value={choice.value} 
+                onChange={e => choice.setter(e.target.value)} 
+                className="w-full border p-2 rounded"
+              >
+                {!choice.required && <option value="">-- Optional --</option>}
+                {INSTRUMENTS.map(ins => {
+                  const isSelectedElsewhere = (i !== 0 && ins === c1) || (i !== 1 && ins === c2) || (i !== 2 && ins === c3);
+                  return <option key={ins} value={ins} disabled={isSelectedElsewhere}>{ins}</option>;
+                })}
+              </select>
+            </div>
+          ))}
+          <div className="flex justify-end gap-3 mt-6">
+            <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
+            <button 
+              disabled={!name.trim() || !c1} 
+              onClick={() => onSubmit(initialData.oldTargetName, name, grade, personality, [c1, c2, c3])} 
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
+            >
+              Save Changes
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
 // ADD FEEDBACK MODAL SUB-COMPONENT
 // ==========================================
-function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, comment: string) => void }) {
+function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, personality: string, comment: string) => void }) {
   const [name, setName] = useState('');
   const [grade, setGrade] = useState<GradeLevel>('6');
+  const [personality, setPersonality] = useState('gray');
   const [comment, setComment] = useState('');
 
   return (
@@ -685,6 +936,29 @@ function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit
             </div>
           </div>
           <div>
+            <label className="block text-sm font-medium mb-2">Personality Color</label>
+            <div className="flex gap-4">
+              {[
+                { val: 'gray', label: 'Gray', color: 'bg-slate-400' },
+                { val: 'blue', label: 'Blue', color: 'bg-blue-500' },
+                { val: 'yellow', label: 'Yellow', color: 'bg-yellow-400' },
+                { val: 'red', label: 'Red', color: 'bg-red-500' },
+              ].map(p => (
+                <label key={p.val} className="flex items-center gap-1.5 cursor-pointer" title={p.label}>
+                  <input 
+                    type="radio" 
+                    name="fb_personality" 
+                    value={p.val} 
+                    checked={personality === p.val} 
+                    onChange={() => setPersonality(p.val)} 
+                    className="w-4 h-4 text-blue-600" 
+                  />
+                  <div className={`w-4 h-4 rounded-full ${p.color} border border-black/10`}></div>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="block text-sm font-medium mb-1">Comment</label>
             <textarea 
               value={comment} 
@@ -698,7 +972,7 @@ function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit
             <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
             <button 
               disabled={!name.trim()} 
-              onClick={() => onSubmit(name, grade, comment)} 
+              onClick={() => onSubmit(name, grade, personality, comment)} 
               className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
             >
               Add Feedback
@@ -827,6 +1101,15 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
     }
   };
 
+  // Determine personality color UI class
+  const personalityColors: Record<string, string> = {
+    blue: 'bg-blue-500',
+    yellow: 'bg-yellow-400',
+    red: 'bg-red-500',
+    gray: 'bg-slate-400'
+  };
+  const pColorClass = personalityColors[student.personality || 'gray'] || 'bg-slate-400';
+
   return (
     <div 
       className="relative py-1 w-full"
@@ -856,9 +1139,10 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
         `}
         onDoubleClick={handleDoubleClick}
       >
-        <span className="absolute -top-1.5 -right-1 sm:-right-1.5 bg-slate-400 text-white text-[9px] sm:text-[10px] font-bold w-3 h-3 sm:w-4 sm:h-4 rounded-full flex items-center justify-center shadow-sm">
-          {student.grade}
-        </span>
+        <span 
+          className={`absolute -top-1.5 -right-1 sm:-right-1.5 ${pColorClass} border border-white w-3 h-3 sm:w-4 sm:h-4 rounded-full shadow-sm`}
+          title={`Grade: ${student.grade} | Personality: ${student.personality || 'gray'}`}
+        />
 
         {isEditingComment ? (
           <textarea
