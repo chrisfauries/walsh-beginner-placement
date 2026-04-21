@@ -42,7 +42,7 @@ function isColorDark(hexColor: string) {
   // For black text (L2 = 0), the formula simplifies:
   const contrastWithBlack = (luminance + 0.05) / 0.05;
 
-  // If contrast is less than 4.5, black text is "too dark" -> true
+  // If contrast is less than 6, black text is "too dark" -> true
   return contrastWithBlack < 6;
 }
 
@@ -425,7 +425,7 @@ export default function App() {
 
   // --- Export CSV ---
   const handleExportCSV = () => {
-    const headers = ['Name', 'Instrument', 'Band', 'Grade', 'Personality', 'Position', 'Director Notes', 'Testing Comment', 'Selmer Score'];
+    const headers = ['ID', 'Name', 'Instrument', 'Band', 'Grade', 'Personality', 'Position', 'Director Notes', 'Testing Comment', 'Selmer Score', 'Color', 'Previous Band'];
     const sortedStudents = [...students].sort((a, b) => {
       if (a.band !== b.band) return a.band.localeCompare(b.band);
       if (a.instrument !== b.instrument) return a.instrument.localeCompare(b.instrument);
@@ -437,7 +437,7 @@ export default function App() {
       return a.name.localeCompare(b.name);
     });
 
-    const rows = sortedStudents.map(s => `"${s.name}","${s.instrument}","${s.band}","${s.grade}","${s.personality || 'gray'}","${s.position ?? 0}","${(s.directorNotes || '').replace(/"/g, '""')}","${(s.comment || '').replace(/"/g, '""')}","${s.selmerScore ?? ''}"`);
+    const rows = sortedStudents.map(s => `"${s.id}","${s.name}","${s.instrument}","${s.band}","${s.grade}","${s.personality || 'gray'}","${s.position ?? 0}","${(s.directorNotes || '').replace(/"/g, '""')}","${(s.comment || '').replace(/"/g, '""')}","${s.selmerScore ?? ''}","${s.color || ''}","${s.previousBand || ''}"`);
     const csvContent = [headers.join(','), ...rows].join('\n');
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
