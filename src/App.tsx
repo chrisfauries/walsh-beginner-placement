@@ -10,6 +10,43 @@ import type {User} from 'firebase/auth';
 import { db, auth } from './firebase'; 
 
 // ==========================================
+// COLOR LUMINANCE HELPERS
+// ==========================================
+function getLuminance(r: number, g: number, b: number) {
+  // Convert 0-255 RGB to a 0-1 scale and linearize
+  const [lr, lg, lb] = [r, g, b].map(v => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  // Apply W3C weighted constants for human perception
+  return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+}
+
+function isColorDark(hexColor: string) {
+  if (!hexColor) return false;
+  
+  // Convert hex to rgb
+  const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+  const hex = hexColor.replace(shorthandRegex, (m, r, g, b) => r + r + g + g + b + b);
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  
+  if (!result) return false;
+  
+  const r = parseInt(result[1], 16);
+  const g = parseInt(result[2], 16);
+  const b = parseInt(result[3], 16);
+
+  const luminance = getLuminance(r, g, b);
+  
+  // Contrast ratio formula: (L1 + 0.05) / (L2 + 0.05)
+  // For black text (L2 = 0), the formula simplifies:
+  const contrastWithBlack = (luminance + 0.05) / 0.05;
+
+  // If contrast is less than 4.5, black text is "too dark" -> true
+  return contrastWithBlack < 6;
+}
+
+// ==========================================
 // CONSTANTS & TYPES
 // ==========================================
 type GradeLevel = '6' | '7' | '8' | '?';
@@ -25,6 +62,8 @@ interface Student {
   color?: string; 
   previousBand?: string; 
   comment?: string; 
+  directorNotes?: string; 
+  selmerScore?: number | null;
 }
 
 interface Band {
@@ -37,6 +76,8 @@ interface EditModalData {
   name: string;
   grade: GradeLevel;
   personality: string;
+  directorNotes: string;
+  selmerScore: string;
   c1: string;
   c2: string;
   c3: string;
@@ -147,7 +188,7 @@ export default function App() {
       .map(s => s.name.toLowerCase().trim())
   );
 
-  const handleAddRecruit = async (name: string, grade: GradeLevel, personality: string, choices: string[]) => {
+  const handleAddRecruit = async (name: string, grade: GradeLevel, personality: string, choices: string[], directorNotes: string, selmerScore: string) => {
     const updates: any = {};
     const rowNames = ['1st Choice', '2nd Choice', '3rd Choice'];
     
@@ -160,6 +201,8 @@ export default function App() {
           band: rowNames[index], 
           grade: grade,
           personality: personality,
+          directorNotes: directorNotes.trim() || null,
+          selmerScore: selmerScore.trim() ? parseInt(selmerScore, 10) : null,
           position: Date.now() + index 
         };
       }
@@ -174,7 +217,9 @@ export default function App() {
     newName: string, 
     newGrade: GradeLevel, 
     newPersonality: string, 
-    newChoices: string[]
+    newChoices: string[],
+    newDirectorNotes: string,
+    newSelmerScore: string
   ) => {
     const updates: any = {};
     const choiceBands = ['1st Choice', '2nd Choice', '3rd Choice'];
@@ -188,7 +233,9 @@ export default function App() {
          ...rest, 
          name: newName.trim(), 
          grade: newGrade, 
-         personality: newPersonality 
+         personality: newPersonality,
+         directorNotes: newDirectorNotes.trim() || null,
+         selmerScore: newSelmerScore.trim() ? parseInt(newSelmerScore, 10) : null
       };
       
       const effectiveBand = record.band === 'Confirmed' && record.previousBand ? record.previousBand : record.band;
@@ -219,6 +266,8 @@ export default function App() {
              band: choiceBands[index],
              grade: newGrade,
              personality: newPersonality,
+             directorNotes: newDirectorNotes.trim() || null,
+             selmerScore: newSelmerScore.trim() ? parseInt(newSelmerScore, 10) : null,
              position: Date.now() + index
           };
       }
@@ -228,23 +277,56 @@ export default function App() {
     setEditModalData(null);
   };
 
-  const submitFeedbackStudent = async (name: string, grade: GradeLevel, personality: string, comment: string) => {
+  const handleUpdatePersonality = async (studentName: string, currentPersonality: string) => {
+    const personalities = ['gray', 'blue', 'yellow', 'red'];
+    const currentIndex = personalities.indexOf(currentPersonality || 'gray');
+    const nextIndex = (currentIndex + 1) % personalities.length;
+    const newPersonality = personalities[nextIndex];
+
+    const targetName = studentName.toLowerCase().trim();
+    const updates: any = {};
+    
+    students.forEach(s => {
+      if (s.name.toLowerCase().trim() === targetName) {
+        updates[`students/${s.id}/personality`] = newPersonality;
+      }
+    });
+    
+    await update(ref(db), updates);
+  };
+
+  const submitFeedbackStudent = async (name: string, grade: GradeLevel, personality: string, comment: string, directorNotes: string, selmerScore: string) => {
     if (!feedbackModalData || !name.trim()) return;
     
     const { band, instrument } = feedbackModalData;
     const cellStudents = students.filter(s => s.band === band && s.instrument === instrument);
     const maxPos = cellStudents.length > 0 ? Math.max(...cellStudents.map(s => s.position ?? 0)) : 0;
     
-    await push(ref(db, 'students'), { 
+    const newStudentKey = push(ref(db, 'students')).key;
+    const updates: any = {};
+    
+    updates[`students/${newStudentKey}`] = { 
       name: name.trim(), 
       instrument, 
       band, 
       grade,
       personality,
       comment: comment.trim() || null,
+      directorNotes: directorNotes.trim() || null,
+      selmerScore: selmerScore.trim() ? parseInt(selmerScore, 10) : null,
       position: maxPos + 1000 
+    };
+
+    // Keep global director notes and selmer score synced for existing instances of this student
+    const targetName = name.toLowerCase().trim();
+    students.forEach(s => {
+      if (s.name.toLowerCase().trim() === targetName) {
+        updates[`students/${s.id}/directorNotes`] = directorNotes.trim() || null;
+        updates[`students/${s.id}/selmerScore`] = selmerScore.trim() ? parseInt(selmerScore, 10) : null;
+      }
     });
     
+    await update(ref(db), updates);
     setFeedbackModalData(null);
   };
 
@@ -253,7 +335,7 @@ export default function App() {
   };
 
   const handleUpdateComment = async (id: string, comment: string) => {
-    await update(ref(db, `students/${id}`), { comment: comment.trim() });
+    await update(ref(db, `students/${id}`), { comment: comment.trim() || null });
   };
 
   // --- Context Menu Handlers ---
@@ -317,11 +399,16 @@ export default function App() {
     const records = students.filter(s => s.name.toLowerCase().trim() === targetName);
     
     let c1 = '', c2 = '', c3 = '';
+    let dNotes = student.directorNotes || '';
+    let sScore = student.selmerScore?.toString() || '';
+    
     records.forEach(r => {
        const band = r.band === 'Confirmed' && r.previousBand ? r.previousBand : r.band;
        if (band === '1st Choice') c1 = r.instrument;
        if (band === '2nd Choice') c2 = r.instrument;
        if (band === '3rd Choice') c3 = r.instrument;
+       if (r.directorNotes && !dNotes) dNotes = r.directorNotes;
+       if (r.selmerScore != null && !sScore) sScore = r.selmerScore.toString();
     });
     
     setEditModalData({
@@ -329,6 +416,8 @@ export default function App() {
        name: student.name,
        grade: student.grade,
        personality: student.personality || 'gray',
+       directorNotes: dNotes,
+       selmerScore: sScore,
        c1, c2, c3
     });
     closeContextMenu();
@@ -336,7 +425,7 @@ export default function App() {
 
   // --- Export CSV ---
   const handleExportCSV = () => {
-    const headers = ['Name', 'Instrument', 'Band', 'Grade', 'Personality', 'Position', 'Comment'];
+    const headers = ['Name', 'Instrument', 'Band', 'Grade', 'Personality', 'Position', 'Director Notes', 'Testing Comment', 'Selmer Score'];
     const sortedStudents = [...students].sort((a, b) => {
       if (a.band !== b.band) return a.band.localeCompare(b.band);
       if (a.instrument !== b.instrument) return a.instrument.localeCompare(b.instrument);
@@ -348,7 +437,7 @@ export default function App() {
       return a.name.localeCompare(b.name);
     });
 
-    const rows = sortedStudents.map(s => `"${s.name}","${s.instrument}","${s.band}","${s.grade}","${s.personality || 'gray'}","${s.position ?? 0}","${(s.comment || '').replace(/"/g, '""')}"`);
+    const rows = sortedStudents.map(s => `"${s.name}","${s.instrument}","${s.band}","${s.grade}","${s.personality || 'gray'}","${s.position ?? 0}","${(s.directorNotes || '').replace(/"/g, '""')}","${(s.comment || '').replace(/"/g, '""')}","${s.selmerScore ?? ''}"`);
     const csvContent = [headers.join(','), ...rows].join('\n');
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -410,6 +499,15 @@ export default function App() {
             className="fixed z-50 bg-white rounded-lg shadow-xl border border-slate-200 py-1 min-w-[160px] flex flex-col overflow-hidden"
             style={{ top: contextMenu.mouseY, left: contextMenu.mouseX }}
           >
+            <button 
+              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 transition-colors"
+              onClick={() => handleOpenEditModal(contextMenuStudent)}
+            >
+              Edit Student
+            </button>
+
+            <div className="border-t border-slate-200 my-0.5"></div>
+
             {contextMenuStudent.band !== 'Confirmed' && contextMenuStudent.band !== 'Feedback' && (
               <button 
                 className={`w-full text-left px-4 py-2 text-sm font-bold transition-colors ${
@@ -433,13 +531,6 @@ export default function App() {
                 Move back to {contextMenuStudent.previousBand}
               </button>
             )}
-
-            <button 
-              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 transition-colors"
-              onClick={() => handleOpenEditModal(contextMenuStudent)}
-            >
-              Edit Student
-            </button>
             
             <button 
               className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
@@ -631,7 +722,6 @@ export default function App() {
                         const isSearchMatch = searchTerm.trim() !== '' && student.name.toLowerCase().includes(searchTerm.toLowerCase());
                         const isSearchHidden = searchTerm.trim() !== '' && !isSearchMatch;
                         
-                        // Hide non-matching tags completely
                         if (isSearchHidden) return null;
 
                         const isGrayedOut = band.name !== 'Confirmed' && confirmedNames.has(student.name.toLowerCase().trim());
@@ -645,6 +735,7 @@ export default function App() {
                             isSearchMatch={isSearchMatch}
                             onUpdateComment={handleUpdateComment}
                             onContextMenu={handleContextMenu}
+                            onUpdatePersonality={handleUpdatePersonality}
                           />
                         );
                       })}
@@ -675,10 +766,12 @@ export default function App() {
 // ==========================================
 // ADD RECRUIT MODAL SUB-COMPONENT
 // ==========================================
-function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, personality: string, choices: string[]) => void }) {
+function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, personality: string, choices: string[], directorNotes: string, selmerScore: string) => void }) {
   const [name, setName] = useState('');
   const [grade, setGrade] = useState<GradeLevel>('6');
   const [personality, setPersonality] = useState('gray');
+  const [directorNotes, setDirectorNotes] = useState('');
+  const [selmerScore, setSelmerScore] = useState('');
   const [c1, setC1] = useState(INSTRUMENTS[0]);
   const [c2, setC2] = useState('');
   const [c3, setC3] = useState('');
@@ -694,14 +787,26 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
       <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6">
         <h3 className="text-xl font-bold mb-4">Add Student</h3>
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Student Name</label>
-            <input 
-              value={name} 
-              onChange={e => setName(e.target.value)} 
-              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
-              placeholder="Enter name..." 
-            />
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1">Student Name</label>
+              <input 
+                value={name} 
+                onChange={e => setName(e.target.value)} 
+                className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                placeholder="Enter name..." 
+              />
+            </div>
+            <div className="w-24">
+              <label className="block text-sm font-medium mb-1">Selmer Score</label>
+              <input 
+                type="number"
+                value={selmerScore} 
+                onChange={e => setSelmerScore(e.target.value)} 
+                className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                placeholder="e.g. 85" 
+              />
+            </div>
           </div>
 
           <div>
@@ -746,6 +851,17 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
               ))}
             </div>
           </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">Director Notes</label>
+            <textarea 
+              value={directorNotes} 
+              onChange={e => setDirectorNotes(e.target.value)} 
+              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none resize-none" 
+              placeholder="Global notes for this student..."
+              rows={2}
+            />
+          </div>
 
           {choicesData.map((choice, i) => (
             <div key={i}>
@@ -767,7 +883,7 @@ function AddRecruitModal({ onClose, onSubmit }: { onClose: () => void, onSubmit:
             <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
             <button 
               disabled={!name.trim() || !c1} 
-              onClick={() => onSubmit(name, grade, personality, [c1, c2, c3])} 
+              onClick={() => onSubmit(name, grade, personality, [c1, c2, c3], directorNotes, selmerScore)} 
               className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
             >
               Add to Choices
@@ -789,11 +905,13 @@ function EditStudentModal({
 }: { 
   initialData: EditModalData, 
   onClose: () => void, 
-  onSubmit: (oldTargetName: string, name: string, grade: GradeLevel, personality: string, choices: string[]) => void 
+  onSubmit: (oldTargetName: string, name: string, grade: GradeLevel, personality: string, choices: string[], directorNotes: string, selmerScore: string) => void 
 }) {
   const [name, setName] = useState(initialData.name);
   const [grade, setGrade] = useState<GradeLevel>(initialData.grade);
   const [personality, setPersonality] = useState(initialData.personality);
+  const [directorNotes, setDirectorNotes] = useState(initialData.directorNotes);
+  const [selmerScore, setSelmerScore] = useState(initialData.selmerScore);
   const [c1, setC1] = useState(initialData.c1);
   const [c2, setC2] = useState(initialData.c2);
   const [c3, setC3] = useState(initialData.c3);
@@ -809,14 +927,26 @@ function EditStudentModal({
       <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6">
         <h3 className="text-xl font-bold mb-4">Edit Student</h3>
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Student Name</label>
-            <input 
-              value={name} 
-              onChange={e => setName(e.target.value)} 
-              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
-              placeholder="Enter name..." 
-            />
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1">Student Name</label>
+              <input 
+                value={name} 
+                onChange={e => setName(e.target.value)} 
+                className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                placeholder="Enter name..." 
+              />
+            </div>
+            <div className="w-24">
+              <label className="block text-sm font-medium mb-1">Selmer Score</label>
+              <input 
+                type="number"
+                value={selmerScore} 
+                onChange={e => setSelmerScore(e.target.value)} 
+                className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                placeholder="e.g. 85" 
+              />
+            </div>
           </div>
 
           <div>
@@ -861,6 +991,17 @@ function EditStudentModal({
               ))}
             </div>
           </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">Director Notes</label>
+            <textarea 
+              value={directorNotes} 
+              onChange={e => setDirectorNotes(e.target.value)} 
+              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none resize-none" 
+              placeholder="Global notes for this student..."
+              rows={2}
+            />
+          </div>
 
           {choicesData.map((choice, i) => (
             <div key={i}>
@@ -882,7 +1023,7 @@ function EditStudentModal({
             <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
             <button 
               disabled={!name.trim() || !c1} 
-              onClick={() => onSubmit(initialData.oldTargetName, name, grade, personality, [c1, c2, c3])} 
+              onClick={() => onSubmit(initialData.oldTargetName, name, grade, personality, [c1, c2, c3], directorNotes, selmerScore)} 
               className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
             >
               Save Changes
@@ -897,10 +1038,12 @@ function EditStudentModal({
 // ==========================================
 // ADD FEEDBACK MODAL SUB-COMPONENT
 // ==========================================
-function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, personality: string, comment: string) => void }) {
+function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit: (name: string, grade: GradeLevel, personality: string, comment: string, directorNotes: string, selmerScore: string) => void }) {
   const [name, setName] = useState('');
   const [grade, setGrade] = useState<GradeLevel>('6');
   const [personality, setPersonality] = useState('gray');
+  const [directorNotes, setDirectorNotes] = useState('');
+  const [selmerScore, setSelmerScore] = useState('');
   const [comment, setComment] = useState('');
 
   return (
@@ -908,14 +1051,26 @@ function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit
       <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6">
         <h3 className="text-xl font-bold mb-4">Add Feedback Entry</h3>
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Student Name</label>
-            <input 
-              value={name} 
-              onChange={e => setName(e.target.value)} 
-              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
-              placeholder="Enter name..." 
-            />
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1">Student Name</label>
+              <input 
+                value={name} 
+                onChange={e => setName(e.target.value)} 
+                className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                placeholder="Enter name..." 
+              />
+            </div>
+            <div className="w-24">
+              <label className="block text-sm font-medium mb-1">Selmer Score</label>
+              <input 
+                type="number"
+                value={selmerScore} 
+                onChange={e => setSelmerScore(e.target.value)} 
+                className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                placeholder="e.g. 85" 
+              />
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium mb-2">Grade Level</label>
@@ -959,12 +1114,22 @@ function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Comment</label>
+            <label className="block text-sm font-medium mb-1">Director Notes</label>
+            <textarea 
+              value={directorNotes} 
+              onChange={e => setDirectorNotes(e.target.value)} 
+              className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none resize-none" 
+              placeholder="Global notes for this student..."
+              rows={2}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Testing Comment</label>
             <textarea 
               value={comment} 
               onChange={e => setComment(e.target.value)} 
               className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none resize-none" 
-              placeholder="Add feedback comment..."
+              placeholder="Specific feedback comment..."
               rows={3}
             />
           </div>
@@ -972,7 +1137,7 @@ function AddFeedbackModal({ onClose, onSubmit }: { onClose: () => void, onSubmit
             <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium">Cancel</button>
             <button 
               disabled={!name.trim()} 
-              onClick={() => onSubmit(name, grade, personality, comment)} 
+              onClick={() => onSubmit(name, grade, personality, comment, directorNotes, selmerScore)} 
               className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 transition-colors"
             >
               Add Feedback
@@ -1040,9 +1205,10 @@ interface StudentCardProps {
   isSearchMatch?: boolean;
   onUpdateComment: (id: string, comment: string) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
+  onUpdatePersonality: (name: string, currentPersonality: string) => void;
 }
 
-function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComment, onContextMenu }: StudentCardProps) {
+function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComment, onContextMenu, onUpdatePersonality }: StudentCardProps) {
   const [isEditingComment, setIsEditingComment] = useState(false);
   const [commentValue, setCommentValue] = useState(student.comment || '');
   const [showTooltip, setShowTooltip] = useState(false);
@@ -1059,7 +1225,7 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
   }, [isEditingComment]);
 
   const handleMouseEnter = (e: React.MouseEvent) => {
-    if (!student.comment) return;
+    if (!student.comment && !student.directorNotes && student.selmerScore == null) return;
     setMousePos({ x: e.clientX, y: e.clientY });
     hoverTimeoutRef.current = setTimeout(() => {
       setShowTooltip(true);
@@ -1067,7 +1233,7 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (student.comment && !showTooltip) {
+    if ((student.comment || student.directorNotes || student.selmerScore != null) && !showTooltip) {
       setMousePos({ x: e.clientX, y: e.clientY });
     }
   };
@@ -1110,6 +1276,29 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
   };
   const pColorClass = personalityColors[student.personality || 'gray'] || 'bg-slate-400';
 
+  const isDarkBg = isColorDark(color || '#ffffff');
+  const textColorClass = isDarkBg ? 'text-white' : 'text-slate-800';
+  const dotColorClass = isDarkBg ? 'bg-white' : 'bg-slate-800';
+
+  const renderDots = () => {
+    if (student.band !== 'Confirmed' || !student.previousBand) return null;
+    
+    let numDots = 0;
+    if (student.previousBand === '1st Choice') numDots = 1;
+    else if (student.previousBand === '2nd Choice') numDots = 2;
+    else if (student.previousBand === '3rd Choice') numDots = 3;
+
+    if (numDots === 0) return null;
+
+    return (
+      <div className="absolute bottom-0.5 right-1 sm:right-1.5 flex gap-0.5">
+        {Array.from({ length: numDots }).map((_, i) => (
+          <div key={i} className={`w-1.5 h-1.5 rounded-full shadow-sm border border-black/20 ${dotColorClass}`} />
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div 
       className="relative py-1 w-full"
@@ -1119,12 +1308,29 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
       onMouseLeave={handleMouseLeave}
     >
       {/* Absolute Hover Tooltip fixed to mouse position */}
-      {showTooltip && student.comment && !isEditingComment && (
+      {showTooltip && (student.comment || student.directorNotes || student.selmerScore != null) && !isEditingComment && (
         <div 
-          className="fixed z-50 bg-yellow-100 border border-yellow-300 text-yellow-900 text-xs p-1.5 rounded shadow-lg whitespace-pre-wrap break-words min-w-[120px] max-w-[250px] pointer-events-none"
+          className="fixed z-50 bg-yellow-100 border border-yellow-300 text-yellow-900 text-xs p-2 rounded shadow-lg whitespace-pre-wrap break-words min-w-[150px] max-w-[250px] pointer-events-none flex flex-col gap-2 text-left"
           style={{ top: mousePos.y + 15, left: mousePos.x }}
         >
-          {student.comment}
+          {student.selmerScore != null && (
+            <div>
+              <span className="font-bold">Selmer Score: </span>
+              {student.selmerScore}
+            </div>
+          )}
+          {student.directorNotes && (
+            <div>
+              <span className="font-bold">Director's Notes: </span>
+              {student.directorNotes}
+            </div>
+          )}
+          {student.comment && (
+            <div>
+              <span className="font-bold">Testing notes: </span>
+              {student.comment}
+            </div>
+          )}
         </div>
       )}
 
@@ -1140,9 +1346,15 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
         onDoubleClick={handleDoubleClick}
       >
         <span 
-          className={`absolute -top-1.5 -right-1 sm:-right-1.5 ${pColorClass} border border-white w-3 h-3 sm:w-4 sm:h-4 rounded-full shadow-sm`}
-          title={`Grade: ${student.grade} | Personality: ${student.personality || 'gray'}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onUpdatePersonality(student.name, student.personality || 'gray');
+          }}
+          className={`absolute -top-1.5 -right-1 sm:-right-1.5 ${pColorClass} border border-white w-3 h-3 sm:w-4 sm:h-4 rounded-full shadow-sm cursor-pointer hover:scale-110 transition-transform z-20`}
+          title={`Grade: ${student.grade} | Personality: ${student.personality || 'gray'} (Click to cycle)`}
         />
+
+        {renderDots()}
 
         {isEditingComment ? (
           <textarea
@@ -1152,11 +1364,11 @@ function StudentCard({ student, color, isGrayedOut, isSearchMatch, onUpdateComme
             onBlur={handleBlurOrSubmit}
             onKeyDown={handleKeyDown}
             className="w-full text-[10px] sm:text-xs font-medium bg-white border border-blue-400 rounded px-1 py-0.5 outline-none resize-none overflow-hidden min-h-[40px] pr-3 sm:pr-4"
-            placeholder="Add comment..."
+            placeholder="Add testing notes..."
             rows={2}
           />
         ) : (
-          <span className="text-[10px] sm:text-xs font-medium text-slate-800 truncate leading-tight mr-3 sm:mr-4 select-none">
+          <span className={`text-[10px] sm:text-xs font-medium truncate leading-tight mr-3 sm:mr-4 select-none pb-1 ${textColorClass}`}>
             {student.name}
           </span>
         )}
